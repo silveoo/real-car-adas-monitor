@@ -5,6 +5,10 @@ project(RealCarMonitor VERSION 0.1.0 LANGUAGES CXX)
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
+set(OpenCV_DIR "C:/msys64/ucrt64/lib/cmake/opencv4")
+
+find_package(OpenCV REQUIRED)
+
 add_executable(RealCarMonitor
     src/main.cpp
     src/obd_parser.cpp
@@ -18,6 +22,10 @@ target_include_directories(RealCarMonitor PRIVATE
     ${CMAKE_SOURCE_DIR}/src
 )
 
+target_link_libraries(RealCarMonitor PRIVATE
+    ${OpenCV_LIBS}
+)
+
 include(FetchContent)
 
 FetchContent_Declare(
@@ -26,7 +34,6 @@ FetchContent_Declare(
 )
 
 set(gtest_force_shared_crt ON CACHE BOOL "" FORCE)
-
 FetchContent_MakeAvailable(googletest)
 
 enable_testing()
