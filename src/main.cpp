@@ -1,20 +1,27 @@
 #include "obd_parser.h"
+#include "onnx_classifier.h"
 
+#include <array>
+#include <iomanip>
 #include <iostream>
 #include <map>
 #include <string>
 
-std::string styleToString(DrivingStyle style) {
-    switch (style) {
-        case DrivingStyle::SLOW:
+std::string styleToString(int label) {
+    switch (label) {
+        case 0:
             return "SLOW";
-        case DrivingStyle::NORMAL:
+        case 1:
             return "NORMAL";
-        case DrivingStyle::AGGRESSIVE:
+        case 2:
             return "AGGRESSIVE";
         default:
             return "UNKNOWN";
     }
+}
+
+int drivingStyleToInt(DrivingStyle style) {
+    return static_cast<int>(style);
 }
 
 int main() {
@@ -28,35 +35,64 @@ int main() {
         return 0;
     }
 
-    std::cout << "Loaded records: " << loadedCount << std::endl;
+    ONNXClassifier classifier;
+    bool classifierLoaded = classifier.loadModel(
+        "../models/driver_classifier.onnx",
+        "../models/normalization_params.json"
+    );
 
-    int limit = std::min(5, parser.size());
+    if (!classifierLoaded) {
+        std::cout << "Classifier files were not found. Put files into models/ folder." << std::endl;
+        return 0;
+    }
+
+    std::cout << "Loaded records: " << loadedCount << std::endl;
+    std::cout << "First 20 classifications:" << std::endl;
+
+    int correct = 0;
+    int limit = std::min(20, parser.size());
+
+    std::cout
+        << std::left
+        << std::setw(5) << "#"
+        << std::setw(14) << "True"
+        << std::setw(14) << "Predicted"
+        << std::setw(12) << "Confidence"
+        << std::endl;
 
     for (int i = 0; i < limit; i++) {
         const OBDRecord& record = parser.getRecord(i);
 
+        std::array<float, 6> features = {
+            static_cast<float>(record.speedKmh),
+            static_cast<float>(record.engineRpm),
+            static_cast<float>(record.throttlePos),
+            static_cast<float>(record.coolantTemp),
+            static_cast<float>(record.fuelLevel),
+            static_cast<float>(record.intakeAirTemp)
+        };
+
+        ClassificationResult result = classifier.classify(features);
+
+        int trueLabel = drivingStyleToInt(record.label);
+        if (result.label == trueLabel) {
+            correct++;
+        }
+
         std::cout
-            << "Record #" << i + 1
-            << " speed=" << record.speedKmh
-            << " rpm=" << record.engineRpm
-            << " throttle=" << record.throttlePos
-            << " temp=" << record.coolantTemp
-            << " fuel=" << record.fuelLevel
-            << " intakeTemp=" << record.intakeAirTemp
-            << " label=" << styleToString(record.label)
+            << std::left
+            << std::setw(5) << i + 1
+            << std::setw(14) << styleToString(trueLabel)
+            << std::setw(14) << styleToString(result.label)
+            << std::setw(12) << std::fixed << std::setprecision(2) << result.confidence
             << std::endl;
     }
 
-    std::map<DrivingStyle, int> classStats;
+    double accuracy = limit == 0 ? 0.0 : static_cast<double>(correct) / limit * 100.0;
 
-    for (int i = 0; i < parser.size(); i++) {
-        classStats[parser.getRecord(i).label]++;
-    }
-
-    std::cout << "Class statistics:" << std::endl;
-    std::cout << "SLOW: " << classStats[DrivingStyle::SLOW] << std::endl;
-    std::cout << "NORMAL: " << classStats[DrivingStyle::NORMAL] << std::endl;
-    std::cout << "AGGRESSIVE: " << classStats[DrivingStyle::AGGRESSIVE] << std::endl;
+    std::cout << "Accuracy on first " << limit << " records: "
+              << std::fixed << std::setprecision(2)
+              << accuracy << "%" << std::endl;
 
     return 0;
 }
