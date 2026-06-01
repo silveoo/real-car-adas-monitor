@@ -40,7 +40,9 @@ enable_testing()
 
 add_executable(RunTests
     tests/test_obd_parser.cpp
+    tests/test_dms_monitor.cpp
     src/obd_parser.cpp
+    src/dms_monitor.cpp
 )
 
 target_include_directories(RunTests PRIVATE
@@ -49,6 +51,7 @@ target_include_directories(RunTests PRIVATE
 
 target_link_libraries(RunTests PRIVATE
     GTest::gtest_main
+    ${OpenCV_LIBS}
 )
 
 include(GoogleTest)

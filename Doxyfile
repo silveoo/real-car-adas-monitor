@@ -1,0 +1,8 @@
+PROJECT_NAME           = "Real Car ADAS Monitor"
+OUTPUT_DIRECTORY       = docs/doxygen
+INPUT                  = src
+RECURSIVE              = YES
+GENERATE_HTML          = YES
+GENERATE_LATEX         = NO
+EXTRACT_ALL            = YES
+QUIET                  = NO
