@@ -7,30 +7,101 @@
 #include <opencv2/opencv.hpp>
 
 #include <array>
-#include <atomic>
-#include <chrono>
-#include <fstream>
 #include <iostream>
-#include <mutex>
-#include <thread>
+#include <string>
 
-struct SharedState {
-    OBDRecord currentRecord{};
-    ClassificationResult currentClassification{};
-    std::atomic<bool> running{true};
-    std::mutex mutex;
+int main() {
+    std::cout << "Realtime ADAS started" << std::endl;
 
-    int processedRecords = 0;
-    int aggressiveAlerts = 0;
-};
+    OBDParser parser;
 
-void obdThreadFunction(SharedState& state,
-                       OBDParser& parser,
-                       ONNXClassifier& classifier) {
+    if (parser.load("../data/obd_data.csv") <= 0) {
+        std::cout << "CSV load failed" << std::endl;
+        return 1;
+    }
+
+    ONNXClassifier classifier;
+
+    if (!classifier.loadModel(
+            "../models/driver_classifier.onnx",
+            "../models/normalization_params.json")) {
+        std::cout << "Classifier load failed" << std::endl;
+        return 1;
+    }
+
+    DMSMonitor dms;
+
+    if (!dms.loadModels(
+            "../models/haarcascade_frontalface_default.xml",
+            "../models/haarcascade_eye.xml")) {
+        std::cout << "DMS models load failed" << std::endl;
+        return 1;
+    }
+
+    cv::VideoCapture camera(0, cv::CAP_DSHOW);
+
+    std::cout << "Camera opened: "
+              << camera.isOpened()
+              << std::endl;
+
+    if (!camera.isOpened()) {
+        return 1;
+    }
+
+    Dashboard dashboard;
+    DMSHUD hud;
+
+    cv::namedWindow(
+        "Real Car ADAS Monitor",
+        cv::WINDOW_NORMAL
+    );
+
+    cv::resizeWindow(
+        "Real Car ADAS Monitor",
+        1280,
+        480
+    );
+
+    bool showDashboard = true;
+    bool showDms = true;
+    bool recording = true;
+
+    int screenshotIndex = 0;
     int index = 0;
 
-    while (state.running) {
-        const OBDRecord& record = parser.getRecord(index);
+    cv::VideoWriter writer(
+        "../output/realtime_recording.avi",
+        cv::VideoWriter::fourcc('M', 'J', 'P', 'G'),
+        20.0,
+        cv::Size(1280, 480)
+    );
+
+    std::cout << "\nControls:\n";
+    std::cout << "Q - Exit\n";
+    std::cout << "S - Screenshot\n";
+    std::cout << "R - Toggle recording\n";
+    std::cout << "D - Toggle dashboard\n";
+    std::cout << "M - Toggle DMS\n\n";
+
+    while (true) {
+        cv::Mat camFrame;
+        camera >> camFrame;
+
+        if (camFrame.empty()) {
+            std::cout << "Empty camera frame" << std::endl;
+            break;
+        }
+
+        cv::resize(
+            camFrame,
+            camFrame,
+            cv::Size(640, 480)
+        );
+
+        const OBDRecord& record =
+            parser.getRecord(index);
+
+        index = (index + 1) % parser.size();
 
         std::array<float, 6> features = {
             static_cast<float>(record.speedKmh),
@@ -41,184 +112,166 @@ void obdThreadFunction(SharedState& state,
             static_cast<float>(record.intakeAirTemp)
         };
 
-        ClassificationResult classification = classifier.classify(features);
+        ClassificationResult classification =
+            classifier.classify(features);
 
-        static OBDRecord smoothRecord = record;
+        DriverState state{};
 
-        smoothRecord.speedKmh = smoothRecord.speedKmh * 0.85 + record.speedKmh * 0.15;
-        smoothRecord.engineRpm = smoothRecord.engineRpm * 0.85 + record.engineRpm * 0.15;
-        smoothRecord.throttlePos = smoothRecord.throttlePos * 0.85 + record.throttlePos * 0.15;
-        smoothRecord.coolantTemp = smoothRecord.coolantTemp * 0.95 + record.coolantTemp * 0.05;
-        smoothRecord.fuelLevel = smoothRecord.fuelLevel * 0.98 + record.fuelLevel * 0.02;
-        smoothRecord.intakeAirTemp = smoothRecord.intakeAirTemp * 0.95 + record.intakeAirTemp * 0.05;
-        smoothRecord.label = record.label;
-
-        {
-            std::lock_guard<std::mutex> lock(state.mutex);
-            state.currentRecord = record;
-            state.currentClassification = classification;
-            state.processedRecords++;
-
-            if (classification.label == 2) {
-                state.aggressiveAlerts++;
-            }
+        if (showDms) {
+            state = dms.analyze(camFrame);
+            hud.draw(camFrame, state);
+        }
+        else {
+            cv::putText(
+                camFrame,
+                "DMS DISABLED",
+                {180, 240},
+                cv::FONT_HERSHEY_SIMPLEX,
+                1.0,
+                cv::Scalar(255, 255, 255),
+                2
+            );
         }
 
-        index = (index + 1) % parser.size();
-        std::this_thread::sleep_for(std::chrono::milliseconds(200));
-    }
-}
+        cv::Mat dashFrame(
+            480,
+            640,
+            CV_8UC3,
+            cv::Scalar(20, 20, 20)
+        );
 
-int main() {
-    std::cout << "Final ADAS system started" << std::endl;
+        if (showDashboard) {
+            dashboard.draw(
+                dashFrame,
+                record,
+                classification
+            );
+        }
+        else {
+            dashFrame.setTo(
+                cv::Scalar(40, 40, 40)
+            );
 
-    OBDParser parser;
-    if (parser.load("../data/obd_data.csv") <= 0) {
-        std::cout << "Failed to load CSV" << std::endl;
-        return 1;
-    }
+            cv::putText(
+                dashFrame,
+                "DASHBOARD DISABLED",
+                {120, 240},
+                cv::FONT_HERSHEY_SIMPLEX,
+                1.0,
+                cv::Scalar(255,255,255),
+                2
+            );
+        }
 
-    ONNXClassifier classifier;
-    if (!classifier.loadModel(
-            "../models/driver_classifier.onnx",
-            "../models/normalization_params.json")) {
-        std::cout << "Failed to load classifier" << std::endl;
-        return 1;
-    }
+        cv::Mat finalFrame(
+            480,
+            1280,
+            CV_8UC3
+        );
 
-    DMSMonitor dmsMonitor;
-    if (!dmsMonitor.loadModels(
-            "../models/haarcascade_frontalface_default.xml",
-            "../models/haarcascade_eye.xml")) {
-        std::cout << "Failed to load DMS models" << std::endl;
-        return 1;
-    }
+        dashFrame.copyTo(
+            finalFrame(
+                cv::Rect(
+                    0,
+                    0,
+                    640,
+                    480
+                )
+            )
+        );
 
-    cv::VideoCapture camera(0, cv::CAP_DSHOW);
-    if (!camera.isOpened()) {
-        std::cout << "Failed to open camera" << std::endl;
-        return 1;
-    }
+        camFrame.copyTo(
+            finalFrame(
+                cv::Rect(
+                    640,
+                    0,
+                    640,
+                    480
+                )
+            )
+        );
 
-    cv::VideoWriter writer(
-        "../output/result_situation2.avi",
-        cv::VideoWriter::fourcc('M', 'J', 'P', 'G'),
-        20.0,
-        cv::Size(1280, 480)
-    );
+        cv::putText(
+            finalFrame,
+            "[Q] Exit  [S] Screenshot  [R] Record  [D] Dashboard  [M] DMS",
+            {10, 25},
+            cv::FONT_HERSHEY_SIMPLEX,
+            0.55,
+            cv::Scalar(255,255,255),
+            1
+        );
 
-    if (!writer.isOpened()) {
-        std::cout << "Failed to open video writer" << std::endl;
-        return 1;
-    }
+        cv::imshow(
+            "Real Car ADAS Monitor",
+            finalFrame
+        );
 
-    std::ofstream alertLog("../output/dms_alerts.log");
+        if (recording && writer.isOpened()) {
+            writer.write(finalFrame);
+        }
 
-    SharedState sharedState;
+        int key = cv::waitKey(30);
 
-    {
-        std::lock_guard<std::mutex> lock(sharedState.mutex);
-        sharedState.currentRecord = parser.getRecord(0);
-        sharedState.currentClassification = classifier.classify({
-            static_cast<float>(sharedState.currentRecord.speedKmh),
-            static_cast<float>(sharedState.currentRecord.engineRpm),
-            static_cast<float>(sharedState.currentRecord.throttlePos),
-            static_cast<float>(sharedState.currentRecord.coolantTemp),
-            static_cast<float>(sharedState.currentRecord.fuelLevel),
-            static_cast<float>(sharedState.currentRecord.intakeAirTemp)
-        });
-    }
-
-    std::thread obdThread(
-        obdThreadFunction,
-        std::ref(sharedState),
-        std::ref(parser),
-        std::ref(classifier)
-    );
-
-    Dashboard dashboard;
-    DMSHUD dmsHud;
-
-    auto startTime = std::chrono::steady_clock::now();
-
-    int totalAlerts = 0;
-    int drowsyAlerts = 0;
-    int distractedAlerts = 0;
-
-    std::cout << "Recording final video..." << std::endl;
-
-    for (int frameIndex = 0; frameIndex < 300; frameIndex++) {
-        cv::Mat cameraFrame;
-        camera >> cameraFrame;
-
-        if (cameraFrame.empty()) {
+        if (key == 'q' ||
+            key == 'Q' ||
+            key == 27) {
             break;
         }
 
-        cv::resize(cameraFrame, cameraFrame, cv::Size(640, 480));
+        if (key == 'd' ||
+            key == 'D') {
+            showDashboard = !showDashboard;
 
-        DriverState driverState = dmsMonitor.analyze(cameraFrame);
-        dmsHud.draw(cameraFrame, driverState);
-
-        OBDRecord recordCopy{};
-        ClassificationResult classificationCopy{};
-
-        {
-            std::lock_guard<std::mutex> lock(sharedState.mutex);
-            recordCopy = sharedState.currentRecord;
-            classificationCopy = sharedState.currentClassification;
+            std::cout
+                << "Dashboard: "
+                << (showDashboard ? "ON" : "OFF")
+                << std::endl;
         }
 
-        cv::Mat dashboardFrame(480, 640, CV_8UC3, cv::Scalar(20, 20, 20));
-        dashboard.draw(dashboardFrame, recordCopy, classificationCopy);
+        if (key == 'm' ||
+            key == 'M') {
+            showDms = !showDms;
 
-        cv::Mat finalFrame(480, 1280, CV_8UC3);
-        dashboardFrame.copyTo(finalFrame(cv::Rect(0, 0, 640, 480)));
-        cameraFrame.copyTo(finalFrame(cv::Rect(640, 0, 640, 480)));
-
-        if (driverState.alertDrowsy || driverState.alertDistracted || classificationCopy.label == 2) {
-            totalAlerts++;
-
-            if (driverState.alertDrowsy) {
-                drowsyAlerts++;
-                alertLog << "Frame " << frameIndex << ": DROWSINESS ALERT\n";
-            }
-
-            if (driverState.alertDistracted) {
-                distractedAlerts++;
-                alertLog << "Frame " << frameIndex << ": DISTRACTION ALERT\n";
-            }
-
-            if (classificationCopy.label == 2) {
-                alertLog << "Frame " << frameIndex << ": AGGRESSIVE DRIVING\n";
-            }
+            std::cout
+                << "DMS: "
+                << (showDms ? "ON" : "OFF")
+                << std::endl;
         }
 
-        if (frameIndex == 30) {
-            cv::imwrite("../output/final_normal.png", finalFrame);
+        if (key == 'r' ||
+            key == 'R') {
+            recording = !recording;
+
+            std::cout
+                << "Recording: "
+                << (recording ? "ON" : "OFF")
+                << std::endl;
         }
 
-        if (frameIndex == 120) {
-            cv::imwrite("../output/final_situation.png", finalFrame);
-        }
+        if (key == 's' ||
+            key == 'S') {
+            std::string filename =
+                "../output/screenshot_" +
+                std::to_string(
+                    screenshotIndex++
+                ) +
+                ".png";
 
-        writer.write(finalFrame);
+            cv::imwrite(
+                filename,
+                finalFrame
+            );
+
+            std::cout
+                << "Saved: "
+                << filename
+                << std::endl;
+        }
     }
 
-    sharedState.running = false;
-    obdThread.join();
-
-    auto endTime = std::chrono::steady_clock::now();
-    double seconds = std::chrono::duration<double>(endTime - startTime).count();
-
-    std::cout << "Final video saved: ../output/result_situation2.avi" << std::endl;
-    std::cout << "Alert log saved: ../output/dms_alerts.log" << std::endl;
-    std::cout << "Runtime: " << seconds << " sec" << std::endl;
-    std::cout << "Processed OBD records: " << sharedState.processedRecords << std::endl;
-    std::cout << "Total alerts: " << totalAlerts << std::endl;
-    std::cout << "Drowsy alerts: " << drowsyAlerts << std::endl;
-    std::cout << "Distracted alerts: " << distractedAlerts << std::endl;
-    std::cout << "Aggressive driving alerts: " << sharedState.aggressiveAlerts << std::endl;
+    writer.release();
+    camera.release();
+    cv::destroyAllWindows();
 
     return 0;
 }
