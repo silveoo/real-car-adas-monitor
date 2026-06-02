@@ -5,18 +5,17 @@
 #include <fstream>
 #include <sstream>
 #include <stdexcept>
+#include <iostream>
 
 ONNXClassifier::ONNXClassifier()
-    : loaded(false) {
+    : env(ORT_LOGGING_LEVEL_WARNING, "RealCarMonitor"),
+      loaded(false) {
+    sessionOptions.SetIntraOpNumThreads(1);
+    sessionOptions.SetGraphOptimizationLevel(GraphOptimizationLevel::ORT_ENABLE_EXTENDED);
 }
 
 bool ONNXClassifier::loadModel(const std::string& modelPath,
                                const std::string& normalizationPath) {
-    std::ifstream modelFile(modelPath, std::ios::binary);
-    if (!modelFile.is_open()) {
-        return false;
-    }
-
     std::ifstream jsonFile(normalizationPath);
     if (!jsonFile.is_open()) {
         return false;
@@ -33,12 +32,25 @@ bool ONNXClassifier::loadModel(const std::string& modelPath,
         return false;
     }
 
+    try {
+        std::wstring wideModelPath = toWideString(modelPath);
+        session = std::make_unique<Ort::Session>(
+            env,
+            wideModelPath.c_str(),
+            sessionOptions
+        );
+    } catch (const Ort::Exception& e) {
+        std::cerr << "ONNX Runtime error: " << e.what() << std::endl;
+        loaded = false;
+        return false;
+    }
+
     loaded = true;
     return true;
 }
 
 ClassificationResult ONNXClassifier::classify(const std::array<float, 6>& features) {
-    if (!loaded) {
+    if (!loaded || !session) {
         throw std::runtime_error("ONNXClassifier is not loaded");
     }
 
@@ -48,31 +60,40 @@ ClassificationResult ONNXClassifier::classify(const std::array<float, 6>& featur
         normalized[i] = (features[i] - mean[i]) / stdValues[i];
     }
 
-    // Temporary lightweight classifier based on generated dataset rules.
-    // Full Ort::Session integration can be added after compiler compatibility is solved.
-    std::vector<float> logits(3);
+    std::array<int64_t, 2> inputShape = {1, 6};
 
-    float speed = features[0];
-    float rpm = features[1];
-    float throttle = features[2];
+    Ort::MemoryInfo memoryInfo = Ort::MemoryInfo::CreateCpu(
+        OrtArenaAllocator,
+        OrtMemTypeDefault
+    );
 
-    logits[0] = 0.0f;
-    logits[1] = 0.0f;
-    logits[2] = 0.0f;
+    Ort::Value inputTensor = Ort::Value::CreateTensor<float>(
+        memoryInfo,
+        normalized.data(),
+        normalized.size(),
+        inputShape.data(),
+        inputShape.size()
+    );
 
-    if (speed < 50 && rpm < 2500 && throttle < 40) {
-        logits[0] = 4.0f;
-        logits[1] = 1.0f;
-        logits[2] = 0.2f;
-    } else if (speed > 90 && rpm > 3300 && throttle > 50) {
-        logits[0] = 0.2f;
-        logits[1] = 1.0f;
-        logits[2] = 4.0f;
-    } else {
-        logits[0] = 0.5f;
-        logits[1] = 4.0f;
-        logits[2] = 0.5f;
-    }
+    const char* inputNames[] = {"features"};
+    const char* outputNames[] = {"class_scores"};
+
+    auto outputTensors = session->Run(
+        Ort::RunOptions{nullptr},
+        inputNames,
+        &inputTensor,
+        1,
+        outputNames,
+        1
+    );
+
+    float* outputData = outputTensors.front().GetTensorMutableData<float>();
+
+    std::vector<float> logits = {
+        outputData[0],
+        outputData[1],
+        outputData[2]
+    };
 
     std::vector<float> probabilities = softmax(logits);
 
@@ -126,6 +147,7 @@ std::vector<float> ONNXClassifier::softmax(const std::vector<float>& logits) {
     float maxLogit = *std::max_element(logits.begin(), logits.end());
 
     float sum = 0.0f;
+
     for (size_t i = 0; i < logits.size(); i++) {
         result[i] = std::exp(logits[i] - maxLogit);
         sum += result[i];
@@ -136,4 +158,8 @@ std::vector<float> ONNXClassifier::softmax(const std::vector<float>& logits) {
     }
 
     return result;
+}
+
+std::wstring ONNXClassifier::toWideString(const std::string& value) {
+    return std::wstring(value.begin(), value.end());
 }

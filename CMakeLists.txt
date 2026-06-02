@@ -8,6 +8,7 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(OpenCV_DIR "C:/msys64/ucrt64/lib/cmake/opencv4")
 
 find_package(OpenCV REQUIRED)
+set(ONNXRUNTIME_DIR "C:/onnxruntime")
 
 add_executable(RealCarMonitor
     src/main.cpp
@@ -20,10 +21,18 @@ add_executable(RealCarMonitor
 
 target_include_directories(RealCarMonitor PRIVATE
     ${CMAKE_SOURCE_DIR}/src
+    ${ONNXRUNTIME_DIR}/include
 )
 
 target_link_libraries(RealCarMonitor PRIVATE
     ${OpenCV_LIBS}
+    ${ONNXRUNTIME_DIR}/lib/onnxruntime.lib
+)
+
+add_custom_command(TARGET RealCarMonitor POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different
+    "${ONNXRUNTIME_DIR}/lib/onnxruntime.dll"
+    $<TARGET_FILE_DIR:RealCarMonitor>
 )
 
 include(FetchContent)

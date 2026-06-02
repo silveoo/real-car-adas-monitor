@@ -1,6 +1,9 @@
 #pragma once
 
+#include <onnxruntime_cxx_api.h>
+
 #include <array>
+#include <memory>
 #include <string>
 #include <vector>
 
@@ -20,6 +23,10 @@ public:
     ClassificationResult classify(const std::array<float, 6>& features);
 
 private:
+    Ort::Env env;
+    Ort::SessionOptions sessionOptions;
+    std::unique_ptr<Ort::Session> session;
+
     std::vector<float> mean;
     std::vector<float> stdValues;
 
@@ -29,4 +36,6 @@ private:
                                             const std::string& key);
 
     std::vector<float> softmax(const std::vector<float>& logits);
+
+    std::wstring toWideString(const std::string& value);
 };
