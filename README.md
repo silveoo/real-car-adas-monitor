@@ -2,6 +2,8 @@
 
 C++ application for vehicle telemetry monitoring and driver state analysis.
 
+<img width="1280" height="480" alt="screenshot_2" src="https://github.com/user-attachments/assets/c4e93770-b57e-43b1-aa50-5ae0823411bd" />
+
 ## Features
 
 - OBD-II CSV telemetry parser
